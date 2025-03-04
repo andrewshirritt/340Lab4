@@ -53,6 +53,7 @@ class DefineScopesAndSymbols(NimbleListener):
     def exitMain(self, ctx: NimbleParser.MainContext):
         self.current_scope = self.current_scope.enclosing_scope
 
+    #does not create new scope.
     def enterFuncDef(self, ctx:NimbleParser.FuncDefContext):
         if ctx.TYPE():
             if ctx.TYPE().getText() == 'Int':
@@ -88,6 +89,20 @@ class DefineScopesAndSymbols(NimbleListener):
 
                 x = FunctionType(type_list, PrimitiveType.String)
                 self.current_scope.define(ctx.ID().getText(), x)
+            #If the return type is void
+            elif not ctx.TYPE().getText():
+                type_list = []
+                for param in ctx.parameterDef():
+                    type_list.append(param.TYPE())
+
+                x = FunctionType(type_list, PrimitiveType.Void)
+                self.current_scope.define(ctx.ID().getText(), x)
+            #throw error if invalid type
+            else:
+                self.error_log.add(ctx, Category.INVALID_CALL,
+                                   f"error: type {ctx.TYPE().getText()} is not a valid return type for "
+                                   f"{ctx.expr().getText()}.")
+
         else:
             type_list = []
             for param in ctx.parameterDef():
@@ -97,9 +112,35 @@ class DefineScopesAndSymbols(NimbleListener):
             self.current_scope.define(ctx.ID().getText(), x)
 
 
-
-    def enterFuncCall(self, ctx: NimbleParser.FuncDefContext):
+    #check that the function is defined
+    #create scope
+    #
+    def enterFuncCall(self, ctx: NimbleParser.FuncDefContext): #TODO: this might not work
         self.current_scope = self.current_scope.create_child_scope(ctx.ID().getText(), PrimitiveType.Void)
+    #check that function is defined. If it is defined it must also be declared. Check in the child scope list of the current scope for a matching name.
+    #check number and type of parameters and that parameters are in order.
+        for scope in self.current_scope.child_scopes.values():
+            if ctx.ID().getText() == scope.name:
+                #Scope is defined! Next to check number of parameters.
+                #firstly, corner case: no params
+                if not ctx.expr() and  len(self.type_list) == 0:
+                    #do whatever a success looks like?
+                    pass
+                elif len(ctx.expr()) == len(self.type_list):
+                    #amounts are right. Check types now.
+                    for param_index in range(len(self.current_scope.parameters())):
+                        if ctx.expr(param_index) is not self.current_scope.parameters(param_index):
+                            #test failed, params are not the same.
+                            self.error_log.add(ctx, Category.INVALID_CALL,
+                                               f"error: parameter types for {ctx.expr().getText()}.")
+                            return
+                    #success! parameters are all the same.
+                    #do whatever a success looks like?
+                    return
+        self.error_log.add(ctx, Category.INVALID_CALL,
+                           f"error: No definition for function call {ctx.expr().getText()}.")
+
+    # if no return type, return type is void
 
     def exitFuncCall(self, ctx: NimbleParser.FuncDefContext):
         self.current_scope = self.current_scope.enclosing_scope
