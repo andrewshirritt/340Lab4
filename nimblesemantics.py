@@ -47,13 +47,15 @@ class DefineScopesAndSymbols(NimbleListener):
         self.current_scope = global_scope
         self.type_of = types
 
+    #Set scope as main
     def enterMain(self, ctx: NimbleParser.MainContext):
         self.current_scope = self.current_scope.create_child_scope('$main', PrimitiveType.Void)
 
+    #set scope as global
     def exitMain(self, ctx: NimbleParser.MainContext):
         self.current_scope = self.current_scope.enclosing_scope
 
-    #does not create new scope.
+    #Creates new scope for each function and sets as new scope
     def enterFuncDef(self, ctx:NimbleParser.FuncDefContext):
         if ctx.TYPE():
             if ctx.TYPE().getText() == 'Int':
@@ -65,6 +67,7 @@ class DefineScopesAndSymbols(NimbleListener):
         else:
             self.current_scope = self.current_scope.create_child_scope(ctx.ID().getText(), PrimitiveType.Void)
 
+    #define the function and its type in the global scope
     def exitFuncDef(self, ctx:NimbleParser.FuncDefContext):
         #generates a list of parameters
         type_list = []
@@ -74,16 +77,16 @@ class DefineScopesAndSymbols(NimbleListener):
         if ctx.TYPE():
             if ctx.TYPE().getText() == 'Int':
                 x = FunctionType(type_list, PrimitiveType.Int)
-                self.current_scope.define(ctx.ID().getText(), x)
+                self.current_scope.enclosing_scope.define(ctx.ID().getText(), x)
             elif ctx.TYPE().getText() == 'Bool':
                 x = FunctionType(type_list, PrimitiveType.Bool)
-                self.current_scope.define(ctx.ID().getText(), x)
+                self.current_scope.enclosing_scope.define(ctx.ID().getText(), x)
             elif ctx.TYPE().getText() == 'String':
                 x = FunctionType(type_list, PrimitiveType.String)
-                self.current_scope.define(ctx.ID().getText(), x)
+                self.current_scope.enclosing_scope.define(ctx.ID().getText(), x)
             #throw error if invalid type
             else:
-                self.error_log.add(ctx, Category.INVALID_CALL,
+                self.error_log.add(ctx, Category.INVALID_RETURN,
                                    f"error: type {ctx.TYPE().getText()} is not a valid return type for "
                                    f"{ctx.expr().getText()}.")
         else:
@@ -119,71 +122,78 @@ class InferTypesAndCheckConstraints(NimbleListener):
     def exitScript(self, ctx: NimbleParser.ScriptContext):
         pass
 
+    #in main scope if in main
     def enterMain(self, ctx: NimbleParser.MainContext):
         self.current_scope = self.current_scope.child_scope_named('$main')
 
+    #back to global
     def exitMain(self, ctx: NimbleParser.MainContext):
         self.current_scope = self.current_scope.enclosing_scope
 
-    def exitBody(self, ctx: NimbleParser.BodyContext):
-        pass
+    #In function scope
+    def enterFuncDef(self, ctx:NimbleParser.FuncDefContext):
+        self.current_scope = self.current_scope.child_scope_named(ctx.ID().getText())
 
-    def exitVarBlock(self, ctx: NimbleParser.VarBlockContext):
-        pass
 
-    def exitBlock(self, ctx: NimbleParser.BlockContext):
-        pass
+    #Define the parameters as variables in the function scope
+    def exitFuncDef(self, ctx:NimbleParser.FuncDefContext):
+        for i in range(len(ctx.parameterDef())):
+            if ctx.parameterDef()[i].TYPE().getText() == 'Int':
+                self.current_scope.define(ctx.parameterDef(i).ID().getText(), PrimitiveType.Int, True)
+            elif ctx.parameterDef()[i].TYPE().getText() == 'Bool':
+                self.current_scope.define(ctx.parameterDef(i).ID().getText(), PrimitiveType.Bool, True)
+            elif ctx.parameterDef()[i].TYPE().getText() == 'String':
+                self.current_scope.define(ctx.parameterDef(i).ID().getText(), PrimitiveType.String, True)
+
+        #back to global
+        self.current_scope = self.current_scope.enclosing_scope
 
         # check that the function is defined
         # create scope
-    def enterFuncCall(self, ctx: NimbleParser.FuncDefContext):  # TODO: this definitely does not work
-        self.current_scope = self.current_scope.create_child_scope(ctx.ID().getText(), PrimitiveType.Void)
+    def exitFuncCall(self, ctx: NimbleParser.FuncCallContext):
         # check that function is defined. If it is defined it must also be declared. Check in the child scope list of the current scope for a matching name.
         # check number and type of parameters and that parameters are in order.
         for scope in self.current_scope.child_scopes.values():
             if ctx.ID().getText() == scope.name:
                 # Scope is defined! Next to check number of parameters.
                 # firstly, corner case: no params
-                if not ctx.expr() and len(self.type_list) == 0:
-                    # do whatever a success looks like?
-                    pass
-                elif len(ctx.expr()) == len(self.type_list):
+                params = [self.current_scope.parameters()]
+                if not ctx.expr() and len(params) == 0:
+                    self.type_of[ctx] = self.current_scope.child_scope_named(ctx.ID().getText()).return_type
+                elif len(ctx.expr()) == len(self.current_scope.parameters()):
                     # amounts are right. Check types now.
-                    for param_index in range(len(self.current_scope.parameters())):
-                        if ctx.expr(param_index) is not self.current_scope.parameters(param_index):
+                    params = [self.current_scope.parameters()]
+                    for param_index in range(len(params)):
+                        if self.type_of[ctx.expr(param_index)] != params[param_index].type:
                             # test failed, params are not the same.
                             self.error_log.add(ctx, Category.INVALID_CALL,
                                                f"error: parameter types for {ctx.expr().getText()}.")
                             return
                     # success! parameters are all the same.
-                    # do whatever a success looks like?
+                    self.type_of[ctx] = self.current_scope.child_scope_named(ctx.ID().getText()).return_type
                     return
         self.error_log.add(ctx, Category.INVALID_CALL,
                            f"error: No definition for function call {ctx.expr().getText()}.")
 
-    # if no return type, return type is void
 
-    def exitFuncCall(self, ctx: NimbleParser.FuncCallContext):
-        self.current_scope = self.current_scope.enclosing_scope
-
+    #checks that the return type of the current scope aka function has the same type as the expression
     def exitReturn(self, ctx: NimbleParser.ReturnContext):
-        # does it have a type?
-        if ctx.TYPE():
-            if not (self.current_scope.return_type == 'Int' and ctx.expr() == "Int"):
+        if ctx.expr():
+            if not (self.current_scope.return_type == PrimitiveType.Int and self.type_of[ctx.expr()] == PrimitiveType.Int):
                 self.error_log.add(ctx, Category.INVALID_RETURN,
                                    f"INVALID RETURN TYPES - RETURNING {ctx.expr().getText()} IS NOT THE SAME AS"
                                    f" THE FUNCTION RETURN TYPE {self.current_scope.return_type}")
-            elif not (self.current_scope.return_type == 'Bool' and ctx.expr() == "Bool"):
+            elif not (self.current_scope.return_type == PrimitiveType.Bool and self.type_of[ctx.expr()] == PrimitiveType.Bool):
                 self.error_log.add(ctx, Category.INVALID_RETURN,
                                    f"INVALID RETURN TYPES - RETURNING {ctx.expr().getText()} IS NOT THE SAME AS"
                                    f" THE FUNCTION RETURN TYPE {self.current_scope.return_type}")
-            elif not (self.current_scope.return_type == 'String' and ctx.expr() == "String"):
+            elif not (self.current_scope.return_type == PrimitiveType.String and self.type_of[ctx.expr()] == PrimitiveType.String):
                 self.error_log.add(ctx, Category.INVALID_RETURN,
                                    f"INVALID RETURN TYPES - RETURNING {ctx.expr().getText()} IS NOT THE SAME AS"
                                    f" THE FUNCTION RETURN TYPE {self.current_scope.return_type}")
         # no explicit type implies the type is void
         else:
-            if not self.current_scope.return_type == "Void":
+            if not self.current_scope.return_type == PrimitiveType.Void:
                 self.error_log.add(ctx, Category.INVALID_RETURN,
                                    f"INVALID RETURN TYPES - RETURNING VOID IS NOT THE SAME AS"
                                    f" THE FUNCTION RETURN TYPE {self.current_scope.return_type}")
@@ -215,6 +225,8 @@ class InferTypesAndCheckConstraints(NimbleListener):
 
             self.error_log.add(ctx, Category.DUPLICATE_NAME,
                                    f"var {ctx.ID().getText()} already declared")
+
+
 
 
 
